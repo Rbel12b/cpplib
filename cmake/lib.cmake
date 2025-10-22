@@ -3,6 +3,7 @@ set(LIB_FULL_NAME    "${LIB_NAME}")
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
 
 add_library(${LIB_FULL_NAME} ${SOURCES})
+add_library("Rbel12b-cpplib::${LIB_NAME}" ALIAS ${LIB_FULL_NAME})
 
 target_include_directories(${LIB_FULL_NAME} 
     PUBLIC
