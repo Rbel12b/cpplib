@@ -46,24 +46,60 @@ namespace cpplib
             m_workingDirectory = path;
         }
 
-        inline void setDetached(bool detached)
+        inline void setDetached(bool detached = true)
         {
             m_detached = detached;
         }
 
-        inline void setInheritHandles(bool inherit)
-        {
-            m_inheritHandles = inherit;
-        }
-
-        inline void setOutputCapture(bool capture)
+        /**
+         * Sets whether to capture the output of the process.
+         * Does not work in detached mode.
+         */
+        inline void setOutputCapture(bool capture = true)
         {
             m_captureOutput = capture;
         }
 
+        /**
+         * Sets a callback function to be called for each line of output captured from the process.
+         * The callback is called only if output capture is enabled, on the same thread as runCommand().
+         * If echo output is enabled, lines are echoed before calling the callback.
+         * If the callback is set getOutput() will return an empty string.
+         * @param callback The callback function.
+         */
         inline void setOutputCallback(std::function<void(const std::string &)> callback)
         {
             m_outputCallback = callback;
+        }
+
+        /**
+         * Sets whether to echo output lines to stdout/stderr as they are captured.
+         */
+        inline void setEchoOutput(bool echo = true)
+        {
+            m_echoOutput = echo;
+        }
+
+        /**
+         * Sets environment variables for the new process in the form KEY=VALUE,
+         * this function overwrites any previously set environment variables.
+         * @param env A vector of environment variable strings.
+         */
+        inline void setEnvironment(const std::vector<std::string> &env)
+        {
+            m_environment = env;
+            if (!env.empty())
+                m_hasCustomEnvironment = true;
+        }
+
+        /**
+         * Adds a single environment variable in the form KEY=VALUE
+         * @param envVar The environment variable string.
+         */
+        inline void pushEnvironmentVariable(const std::string &envVar)
+        {
+            m_environment.push_back(envVar);
+            m_hasCustomEnvironment = true;
         }
 
         inline std::string getOutput() const
@@ -89,9 +125,11 @@ namespace cpplib
         std::filesystem::path m_exePath;
         std::vector<std::string> m_arguments;
         std::string m_workingDirectory;
+        std::vector<std::string> m_environment;
+        bool m_hasCustomEnvironment = false;
         bool m_detached = false;
-        bool m_inheritHandles = false;
         bool m_captureOutput = false;
+        bool m_echoOutput = false;
         OutputLineCallback m_outputCallback = nullptr;
 
         std::string m_capturedOutput;
