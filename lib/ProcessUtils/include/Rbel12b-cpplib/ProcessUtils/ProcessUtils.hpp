@@ -60,6 +60,11 @@ namespace cpplib
             }
         }
 
+        inline void clearArguments()
+        {
+            m_arguments.clear();
+        }
+
         inline void appendArgument(const std::string &arg)
         {
             m_arguments.push_back(arg);

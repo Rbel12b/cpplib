@@ -276,7 +276,7 @@ namespace cpplib
             std::thread outputThread([this]() {
                 std::string line;
                 while (std::getline(out, line)) {
-                    m_outputCallback(line);
+                    m_outputCallback(line + '\n');
                 }
             });
             outputThread.detach();
@@ -287,7 +287,7 @@ namespace cpplib
             std::thread errorThread([this]() {
                 std::string line;
                 while (std::getline(err, line)) {
-                    m_errorCallback(line);
+                    m_errorCallback(line + '\n');
                 }
             });
             errorThread.detach();
