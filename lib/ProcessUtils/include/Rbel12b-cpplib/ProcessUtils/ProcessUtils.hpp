@@ -197,15 +197,21 @@ namespace cpplib
 
     private:
         std::vector<std::string> buildArgv(const std::string &cmd) const;
-
-        char *const *buildArgvArray(const std::vector<std::string> &argv) const;
-        void freeArgvArray(char *const *argv) const;
-
         void monitorProcess();
         void onProcessExit();
 
         void closePipes();
+
+        void startIOThreads();
+
+#ifdef _WIN32
+        wchar_t* buildEnvironmentBlock();
+#else
         void closePipe(int pipeFd[2], bool openFlags[2], int endsToClose = 2);
+
+        char *const *buildArgvArray(const std::vector<std::string> &argv) const;
+        void freeArgvArray(char *const *argv) const;
+#endif
 
     private:
         std::filesystem::path m_exePath;
@@ -217,15 +223,29 @@ namespace cpplib
         OutputLineCallback m_outputCallback = nullptr;
         OutputLineCallback m_errorCallback = nullptr;
         int m_exitCode = -1;
+#ifndef _WIN32
         int m_stdOutPipe[2];
         bool m_stdOutPipeOpen[2] = {false, false};
         int m_stdErrPipe[2];
         bool m_stdErrPipeOpen[2] = {false, false};
         int m_stdInPipe[2];
         bool m_stdInPipeOpen[2] = {false, false};
+#else
+        bool m_stdOutPipeOpen = false;
+        bool m_stdErrPipeOpen = false;
+        bool m_stdInPipeOpen = false;
+        HANDLE hStdOutRd = INVALID_HANDLE_VALUE;
+        HANDLE hStdErrRd = INVALID_HANDLE_VALUE;
+        HANDLE hStdInWr = INVALID_HANDLE_VALUE;
+#endif
         bool m_running = false;
-        int m_pid = -1;
+        pid_t m_pid = -1;
         std::thread m_monitorThread;
+
+#ifdef _WIN32
+        HANDLE m_processHandle = INVALID_HANDLE_VALUE;
+        HANDLE m_threadHandle = INVALID_HANDLE_VALUE;
+#endif
 
         fd_streambuf* m_stdinBuf = nullptr;
         fd_streambuf* m_stdoutBuf = nullptr;

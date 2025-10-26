@@ -148,7 +148,259 @@ namespace cpplib
 
         closePipes();
     }
+
+    void Process::startIOThreads()
+    {
+        std::thread outputThread([this]()
+                                 {
+            std::string line;
+            while (std::getline(out, line)) {
+                if (m_outputCallback)
+                {
+                    m_outputCallback(line + '\n');
+                    continue;
+                }
+                else
+                {
+                    std::cout << line << std::endl;
+                }
+            } });
+        outputThread.detach();
+        std::thread errorThread([this]()
+                                {
+            std::string line;
+            while (std::getline(err, line)) {
+                if (m_errorCallback)
+                {
+                    m_errorCallback(line + '\n');
+                    continue;
+                }
+                else
+                {
+                    std::cout << line << std::endl;
+                }
+            } });
+        errorThread.detach();
+    }
+
 #ifdef _WIN32
+    int Process::start()
+    {
+        SECURITY_ATTRIBUTES saAttr{};
+        saAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
+        saAttr.bInheritHandle = TRUE;
+        saAttr.lpSecurityDescriptor = nullptr;
+
+        HANDLE hStdOutRd = nullptr, hStdOutWr = nullptr;
+        HANDLE hStdErrRd = nullptr, hStdErrWr = nullptr;
+        HANDLE hStdInRd = nullptr, hStdInWr = nullptr;
+
+        if (!m_detached)
+        {
+            // Create pipes for stdin/out/err
+            if (!CreatePipe(&hStdOutRd, &hStdOutWr, &saAttr, 0))
+                throw std::runtime_error("CreatePipe (stdout) failed");
+            if (!SetHandleInformation(hStdOutRd, HANDLE_FLAG_INHERIT, 0))
+                throw std::runtime_error("SetHandleInformation failed (stdout)");
+
+            if (!CreatePipe(&hStdErrRd, &hStdErrWr, &saAttr, 0))
+                throw std::runtime_error("CreatePipe (stderr) failed");
+            if (!SetHandleInformation(hStdErrRd, HANDLE_FLAG_INHERIT, 0))
+                throw std::runtime_error("SetHandleInformation failed (stderr)");
+
+            if (!CreatePipe(&hStdInRd, &hStdInWr, &saAttr, 0))
+                throw std::runtime_error("CreatePipe (stdin) failed");
+            if (!SetHandleInformation(hStdInWr, HANDLE_FLAG_INHERIT, 0))
+                throw std::runtime_error("SetHandleInformation failed (stdin)");
+        }
+
+        // Build command line (Windows requires a single command string)
+        std::wstringstream cmdLine;
+        cmdLine << L"\"" << m_exePath.wstring() << L"\"";
+        for (auto &arg : m_arguments)
+            cmdLine << L" \"" << std::wstring(arg.begin(), arg.end()) << L"\"";
+
+        STARTUPINFOW si{};
+        PROCESS_INFORMATION pi{};
+        si.cb = sizeof(STARTUPINFO);
+
+        if (!m_detached)
+        {
+            si.dwFlags |= STARTF_USESTDHANDLES;
+            si.hStdOutput = hStdOutWr;
+            si.hStdError = hStdErrWr;
+            si.hStdInput = hStdInRd;
+        }
+
+        DWORD creationFlags = 0;
+        if (m_detached)
+            creationFlags |= DETACHED_PROCESS;
+        else
+            creationFlags |= CREATE_NO_WINDOW;
+
+        std::wstring workDir = m_workingDirectory.empty()
+                                   ? L""
+                                   : std::wstring(m_workingDirectory.begin(), m_workingDirectory.end());
+
+        if (m_detached)
+        {
+            std::wstring parameters;
+            for (auto &arg : m_arguments)
+            {
+                if (!parameters.empty())
+                    parameters += L" ";
+                parameters += L"\"" + std::wstring(arg.begin(), arg.end()) + L"\"";
+            }
+
+            HINSTANCE result = ShellExecuteW(
+                nullptr,                                           // parent window
+                L"open",                                           // operation
+                m_exePath.wstring().c_str(),                       // file to execute
+                parameters.empty() ? nullptr : parameters.c_str(), // parameters
+                workDir.empty() ? nullptr : workDir.c_str(),       // working dir
+                SW_SHOWNORMAL                                      // no visible window
+            );
+
+            if ((INT_PTR)result <= 32)
+            {
+                DWORD err = GetLastError();
+                std::ostringstream ss;
+                ss << "ShellExecuteW failed (" << (INT_PTR)result
+                   << ") with error: " << err;
+                std::cout << ss.str() << std::endl;
+                return 0;
+            }
+
+            m_running = false; // detached process, not monitored
+            m_pid = -1;
+            m_exitCode = 0;
+            return 0;
+        }
+
+        BOOL success = CreateProcessW(
+            m_exePath.wstring().c_str(),
+            cmdLine.str().data(),
+            nullptr, nullptr,
+            TRUE, // inherit handles
+            creationFlags,
+            m_hasCustomEnvironment ? buildEnvironmentBlock() : nullptr,
+            workDir.empty() ? nullptr : workDir.c_str(),
+            &si, &pi);
+
+        if (!success)
+        {
+            std::cout << "CreateProcess failed with error: " << GetLastError() << std::endl;
+            // print all arguments to stdout for debugging
+            std::cout << "CreateProcess arguments: " << cmdLine.str().c_str() << std::endl;
+            std::cout << "Executable path: " << m_exePath.string() << std::endl;
+            std::cout << "Working directory: " << m_workingDirectory << std::endl;
+            std::cout << "Environment variables: " << std::endl;
+            for (auto &envVar : m_environment)
+            {
+                std::cout << envVar << std::endl;
+            }
+            std::cout << creationFlags << std::endl;
+            throw std::runtime_error("CreateProcess failed");
+        }
+
+        CloseHandle(hStdOutWr);
+        CloseHandle(hStdErrWr);
+        CloseHandle(hStdInRd);
+
+        m_processHandle = pi.hProcess;
+        m_threadHandle = pi.hThread;
+        m_pid = pi.dwProcessId;
+        m_running = true;
+
+        if (m_stdoutBuf)
+            delete m_stdoutBuf;
+        if (m_stderrBuf)
+            delete m_stderrBuf;
+        if (m_stdinBuf)
+            delete m_stdinBuf;
+
+        // Attach streams
+        m_stdoutBuf = new fd_streambuf(hStdOutRd, true);
+        out.rdbuf(m_stdoutBuf);
+        m_stderrBuf = new fd_streambuf(hStdErrRd, true);
+        err.rdbuf(m_stderrBuf);
+        m_stdinBuf = new fd_streambuf(hStdInWr, false);
+        in.rdbuf(m_stdinBuf);
+
+        // Start monitor thread
+        m_monitorThread = std::thread(std::bind(&Process::monitorProcess, this));
+
+        startIOThreads();
+
+        return 0;
+    }
+
+    wchar_t *Process::buildEnvironmentBlock()
+    {
+        if (!m_hasCustomEnvironment)
+            return nullptr;
+        std::wstring envBlock;
+        for (auto &kv : m_environment)
+        {
+            envBlock += std::wstring(kv.begin(), kv.end());
+            envBlock += L'\0';
+        }
+        envBlock += L'\0';
+        wchar_t *envPtr = new wchar_t[envBlock.size()];
+        std::copy(envBlock.begin(), envBlock.end(), envPtr);
+        return envPtr;
+    }
+
+    void Process::monitorProcess()
+    {
+        WaitForSingleObject(m_processHandle, INFINITE);
+
+        DWORD exitCode;
+        if (GetExitCodeProcess(m_processHandle, &exitCode))
+            m_exitCode = exitCode;
+        else
+            m_exitCode = -1;
+
+        onProcessExit();
+    }
+
+    int Process::waitForExit()
+    {
+        if (m_detached || !m_running)
+            return -1;
+
+        WaitForSingleObject(m_processHandle, INFINITE);
+
+        DWORD exitCode;
+        if (GetExitCodeProcess(m_processHandle, &exitCode))
+            m_exitCode = exitCode;
+
+        CloseHandle(m_processHandle);
+        CloseHandle(m_threadHandle);
+        closePipes();
+
+        m_running = false;
+        return m_exitCode;
+    }
+
+    void Process::closePipes()
+    {
+        if (m_stdOutPipeOpen)
+        {
+            CloseHandle(hStdOutRd);
+            m_stdOutPipeOpen = false;
+        }
+        if (m_stdErrPipeOpen)
+        {
+            CloseHandle(hStdErrRd);
+            m_stdErrPipeOpen = false;
+        }
+        if (m_stdInPipeOpen)
+        {
+            CloseHandle(hStdInWr);
+            m_stdInPipeOpen = false;
+        }
+    }
 #else
     int Process::start()
     {
@@ -275,27 +527,7 @@ namespace cpplib
 
         m_monitorThread = std::thread(std::bind(&Process::monitorProcess, this));
 
-        if (m_outputCallback)
-        {
-            std::thread outputThread([this]()
-                                     {
-                std::string line;
-                while (std::getline(out, line)) {
-                    m_outputCallback(line + '\n');
-                } });
-            outputThread.detach();
-        }
-
-        if (m_errorCallback)
-        {
-            std::thread errorThread([this]()
-                                    {
-                std::string line;
-                while (std::getline(err, line)) {
-                    m_errorCallback(line + '\n');
-                } });
-            errorThread.detach();
-        }
+        startIOThreads();
 
         return 0;
     }
