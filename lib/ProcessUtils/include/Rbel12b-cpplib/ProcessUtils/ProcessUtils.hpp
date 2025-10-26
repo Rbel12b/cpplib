@@ -7,6 +7,10 @@
 #include <vector>
 #include <thread>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace cpplib
 {
     class fd_streambuf : public std::streambuf

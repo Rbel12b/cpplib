@@ -18,7 +18,7 @@
 #endif
 
 #define CLOSE_PIPE(pipe, end) \
-    closePipe(m_std ## pipe ## Pipe, m_std ## pipe ## PipeOpen, end);
+    closePipe(m_std##pipe##Pipe, m_std##pipe##PipeOpen, end);
 
 namespace cpplib
 {
@@ -91,21 +91,24 @@ namespace cpplib
         return EOF;
     }
 
-    size_t fd_streambuf::available() const {
+    size_t fd_streambuf::available() const
+    {
         return egptr() - gptr(); // number of bytes currently buffered
     }
 #ifdef _WIN32
-    bool fd_streambuf::hasData() const {
+    bool fd_streambuf::hasData() const
+    {
         DWORD available = 0;
         return PeekNamedPipe(handle, nullptr, 0, nullptr, &available, nullptr) && available > 0;
     }
 #else
-    bool fd_streambuf::hasData() const {
+    bool fd_streambuf::hasData() const
+    {
         fd_set readfds;
         FD_ZERO(&readfds);
         FD_SET(fd, &readfds);
-        timeval tv {0, 0}; // zero timeout = non-blocking
-        return select(fd+1, &readfds, nullptr, nullptr, &tv) > 0;
+        timeval tv{0, 0}; // zero timeout = non-blocking
+        return select(fd + 1, &readfds, nullptr, nullptr, &tv) > 0;
     }
 #endif
 
@@ -145,7 +148,8 @@ namespace cpplib
 
         closePipes();
     }
-
+#ifdef _WIN32
+#else
     int Process::start()
     {
         std::vector<std::string> argv_vec;
@@ -273,50 +277,25 @@ namespace cpplib
 
         if (m_outputCallback)
         {
-            std::thread outputThread([this]() {
+            std::thread outputThread([this]()
+                                     {
                 std::string line;
                 while (std::getline(out, line)) {
                     m_outputCallback(line + '\n');
-                }
-            });
+                } });
             outputThread.detach();
         }
 
         if (m_errorCallback)
         {
-            std::thread errorThread([this]() {
+            std::thread errorThread([this]()
+                                    {
                 std::string line;
                 while (std::getline(err, line)) {
                     m_errorCallback(line + '\n');
-                }
-            });
+                } });
             errorThread.detach();
         }
-
-        return 0;
-    }
-
-    int Process::run()
-    {
-        if (start())
-        {
-            return -1;
-        }
-
-        int pid = m_pid;
-
-        if (pid == -1)
-        {
-            return -1;
-        }
-
-        if (m_detached)
-        {
-            // In detached mode, do not wait for the child
-            return 0;
-        }
-
-        waitForExit();
 
         return 0;
     }
@@ -364,48 +343,6 @@ namespace cpplib
         return m_exitCode;
     }
 
-    std::vector<std::string> Process::buildArgv(const std::string &cmd) const
-    {
-        std::vector<std::string> out;
-        size_t pos = 0, start = 0;
-        while ((pos = cmd.find(' ', start)) != std::string::npos)
-        {
-            if (pos > start)
-                out.push_back(cmd.substr(start, pos - start));
-            start = pos + 1;
-        }
-        if (start < cmd.size())
-            out.push_back(cmd.substr(start));
-        return out;
-    }
-
-    char *const *Process::buildArgvArray(const std::vector<std::string> &argv) const
-    {
-        // Allocate array of char* (size + 1 for null terminator)
-        char **argArray = new char *[argv.size() + 1];
-
-        for (size_t i = 0; i < argv.size(); ++i)
-        {
-            // Duplicate string data (so lifetime is independent of std::string)
-            argArray[i] = strdup(argv[i].c_str());
-        }
-
-        argArray[argv.size()] = nullptr; // NULL terminator
-        return argArray;
-    }
-
-    void Process::freeArgvArray(char *const *argv) const
-    {
-        if (!argv)
-            return;
-
-        for (size_t i = 0; argv[i] != nullptr; ++i)
-        {
-            free(const_cast<char *>(argv[i]));
-        }
-        delete[] argv;
-    }
-
     void Process::monitorProcess()
     {
         int status;
@@ -432,12 +369,6 @@ namespace cpplib
                 break;
             }
         }
-    }
-
-    void Process::onProcessExit()
-    {
-        m_running = false;
-        waitForExit();
     }
 
     void Process::closePipes()
@@ -475,5 +406,79 @@ namespace cpplib
                 openFlags[1] = false;
             }
         }
+    }
+
+    char *const *Process::buildArgvArray(const std::vector<std::string> &argv) const
+    {
+        // Allocate array of char* (size + 1 for null terminator)
+        char **argArray = new char *[argv.size() + 1];
+
+        for (size_t i = 0; i < argv.size(); ++i)
+        {
+            // Duplicate string data (so lifetime is independent of std::string)
+            argArray[i] = strdup(argv[i].c_str());
+        }
+
+        argArray[argv.size()] = nullptr; // NULL terminator
+        return argArray;
+    }
+
+    void Process::freeArgvArray(char *const *argv) const
+    {
+        if (!argv)
+            return;
+
+        for (size_t i = 0; argv[i] != nullptr; ++i)
+        {
+            free(const_cast<char *>(argv[i]));
+        }
+        delete[] argv;
+    }
+#endif
+
+    int Process::run()
+    {
+        if (start())
+        {
+            return -1;
+        }
+
+        int pid = m_pid;
+
+        if (pid == -1)
+        {
+            return -1;
+        }
+
+        if (m_detached)
+        {
+            // In detached mode, do not wait for the child
+            return 0;
+        }
+
+        waitForExit();
+
+        return 0;
+    }
+
+    std::vector<std::string> Process::buildArgv(const std::string &cmd) const
+    {
+        std::vector<std::string> out;
+        size_t pos = 0, start = 0;
+        while ((pos = cmd.find(' ', start)) != std::string::npos)
+        {
+            if (pos > start)
+                out.push_back(cmd.substr(start, pos - start));
+            start = pos + 1;
+        }
+        if (start < cmd.size())
+            out.push_back(cmd.substr(start));
+        return out;
+    }
+
+    void Process::onProcessExit()
+    {
+        m_running = false;
+        waitForExit();
     }
 }; // namespace cpplib
