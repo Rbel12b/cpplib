@@ -11,6 +11,11 @@ target_include_directories(${LIB_FULL_NAME}
         $<INSTALL_INTERFACE:include>
 )
 
+target_include_directories(${LIB_FULL_NAME}
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/Rbel12b-cpplib/${LIB_NAME}
+)
+
 target_compile_features(${LIB_FULL_NAME} PUBLIC cxx_std_17)
 
 install(
