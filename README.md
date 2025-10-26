@@ -15,7 +15,7 @@ All libraries use cmake as the build system.
 
 ## License
 
-This project is licensed under the GNU AFFERO GENERAL PUBLIC LICENSE see [LICENSE](LICENSE) for details.
+This project is licensed under AGPL-3.0 see [LICENSE](LICENSE) for details.
 
 ## Contribution
 

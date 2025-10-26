@@ -27,7 +27,7 @@ Including ProcessUtils in your project
 
 ## Installing and Linking
 
-#### Install cpplib with cmake
+### Install cpplib with cmake
 
 ```bash
 git clone https://github.com/Rbel12b/cpplib.git
@@ -44,7 +44,7 @@ find_package(Rbel12b-cpplib REQUIRED COMPONENTS ProcessUtils)
 target_link_libraries(your_target PRIVATE Rbel12b-cpplib::ProcessUtils)
 ```
 
-#### Or add cpplib as a subdirectory in your project’s CMakeLists.txt
+### Or add cpplib as a subdirectory in your project’s CMakeLists.txt
 
 ```cmake
 add_subdirectory(path/to/cpplib)
