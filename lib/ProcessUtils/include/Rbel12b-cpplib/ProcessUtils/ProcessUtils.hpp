@@ -30,6 +30,8 @@ namespace cpplib
         int sync() override;
         int overflow(int ch) override;
         int underflow() override;
+        size_t available() const;
+        bool hasData() const;
     };
     class Process
     {
@@ -80,14 +82,20 @@ namespace cpplib
 
         /**
          * Sets a callback function to be called for each line of output captured from the process.
-         * The callback is called only if output capture is enabled, on the same thread as run().
-         * If echo output is enabled, lines are echoed before calling the callback.
-         * If the callback is set getOutput() will return an empty string.
+         * The callback is called on the same thread as run().
          * @param callback The callback function.
          */
         inline void setOutputCallback(std::function<void(const std::string &)> callback)
         {
             m_outputCallback = callback;
+        }
+
+        /**
+         * Sets a callback function to be called for each line of error output captured from the process.
+         */
+        inline void setErrorCallback(std::function<void(const std::string &)> callback)
+        {
+            m_errorCallback = callback;
         }
 
         /**
@@ -119,7 +127,7 @@ namespace cpplib
 
         /**
          * Runs the configured process and waits for it to finish.
-         * If output capture is enabled, captures output and calls the output callback if set.
+         * If output/error callbacks are set, output/error streams are read in separate threads.
          * @return 0 on success, -1 on error (exceptions are thrown on errors).
          */
         int run();
@@ -128,8 +136,10 @@ namespace cpplib
          * Starts the configured process without waiting for it to finish.
          * In detached mode the process is fully detached from the parent.
          * In non-detached mode the process is a child of the parent and
-         * should be waited on later to avoid zombie processes.
-         * This function does not capture output.
+         * should be waited on later to avoid zombie processes. (see waitForExit())
+         * If output/error callbacks are set, output/error streams are read in separate threads.
+         * If after calling this function the programs reads from out/err streams,
+         * the callbacks won't receive the read lines.
          * @return 0 on success, -1 on error (exceptions are thrown on errors).
          */
         int start();
@@ -144,6 +154,16 @@ namespace cpplib
         bool running() const
         {
             return m_running;
+        }
+
+        bool outputAvailable() const
+        {
+            return m_stdoutBuf && (m_stdoutBuf->available() || m_stdoutBuf->hasData());
+        }
+
+        bool errorAvailable() const
+        {
+            return m_stderrBuf && (m_stderrBuf->available() || m_stderrBuf->hasData());
         }
 
     public:
@@ -175,6 +195,9 @@ namespace cpplib
         void monitorProcess();
         void onProcessExit();
 
+        void closePipes();
+        void closePipe(int pipeFd[2], bool openFlags[2], int endsToClose = 2);
+
     private:
         std::filesystem::path m_exePath;
         std::vector<std::string> m_arguments;
@@ -183,9 +206,14 @@ namespace cpplib
         bool m_hasCustomEnvironment = false;
         bool m_detached = false;
         OutputLineCallback m_outputCallback = nullptr;
+        OutputLineCallback m_errorCallback = nullptr;
         int m_exitCode = -1;
         int m_stdOutPipe[2];
         bool m_stdOutPipeOpen[2] = {false, false};
+        int m_stdErrPipe[2];
+        bool m_stdErrPipeOpen[2] = {false, false};
+        int m_stdInPipe[2];
+        bool m_stdInPipeOpen[2] = {false, false};
         bool m_running = false;
         int m_pid = -1;
         std::thread m_monitorThread;

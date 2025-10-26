@@ -17,6 +17,9 @@
 #include <fcntl.h>
 #endif
 
+#define CLOSE_PIPE(pipe, end) \
+    closePipe(m_std ## pipe ## Pipe, m_std ## pipe ## PipeOpen, end);
+
 namespace cpplib
 {
 
@@ -88,6 +91,24 @@ namespace cpplib
         return EOF;
     }
 
+    size_t fd_streambuf::available() const {
+        return egptr() - gptr(); // number of bytes currently buffered
+    }
+#ifdef _WIN32
+    bool fd_streambuf::hasData() const {
+        DWORD available = 0;
+        return PeekNamedPipe(handle, nullptr, 0, nullptr, &available, nullptr) && available > 0;
+    }
+#else
+    bool fd_streambuf::hasData() const {
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(fd, &readfds);
+        timeval tv {0, 0}; // zero timeout = non-blocking
+        return select(fd+1, &readfds, nullptr, nullptr, &tv) > 0;
+    }
+#endif
+
     Process::~Process()
     {
         if (m_monitorThread.joinable())
@@ -122,16 +143,7 @@ namespace cpplib
             waitForExit();
         }
 
-        if (m_stdOutPipeOpen[0])
-        {
-            close(m_stdOutPipe[0]);
-            m_stdOutPipeOpen[0] = false;
-        }
-        if (m_stdOutPipeOpen[1])
-        {
-            close(m_stdOutPipe[1]);
-            m_stdOutPipeOpen[1] = false;
-        }
+        closePipes();
     }
 
     int Process::start()
@@ -154,6 +166,26 @@ namespace cpplib
             }
             m_stdOutPipeOpen[0] = true;
             m_stdOutPipeOpen[1] = true;
+
+            if (pipe(m_stdErrPipe) == -1)
+            {
+                freeArgvArray(argv);
+                freeArgvArray(envp);
+                throw std::runtime_error("pipe() failed");
+                return -1;
+            }
+            m_stdErrPipeOpen[0] = true;
+            m_stdErrPipeOpen[1] = true;
+
+            if (pipe(m_stdInPipe) == -1)
+            {
+                freeArgvArray(argv);
+                freeArgvArray(envp);
+                throw std::runtime_error("pipe() failed");
+                return -1;
+            }
+            m_stdInPipeOpen[0] = true;
+            m_stdInPipeOpen[1] = true;
         }
 
         pid_t pid = fork();
@@ -161,16 +193,7 @@ namespace cpplib
         {
             freeArgvArray(argv);
             freeArgvArray(envp);
-            if (m_stdOutPipeOpen[0])
-            {
-                close(m_stdOutPipe[0]);
-                m_stdOutPipeOpen[0] = false;
-            }
-            if (m_stdOutPipeOpen[1])
-            {
-                close(m_stdOutPipe[1]);
-                m_stdOutPipeOpen[1] = false;
-            }
+            closePipes();
             throw std::runtime_error("fork() failed");
             return -1;
         }
@@ -195,13 +218,12 @@ namespace cpplib
             else
             {
                 // Redirect stdout to pipe
-                if (m_stdOutPipeOpen[0])
-                {
-                    close(m_stdOutPipe[0]);
-                    m_stdOutPipeOpen[0] = false;
-                }
+                CLOSE_PIPE(Out, 0);
+                CLOSE_PIPE(Err, 0);
+                CLOSE_PIPE(In, 1);
                 dup2(m_stdOutPipe[1], STDOUT_FILENO);
-                dup2(m_stdOutPipe[1], STDERR_FILENO);
+                dup2(m_stdErrPipe[1], STDERR_FILENO);
+                dup2(m_stdInPipe[0], STDIN_FILENO);
             }
 
             if (!m_workingDirectory.empty())
@@ -220,11 +242,9 @@ namespace cpplib
             _exit(127);
         }
 
-        if (m_stdOutPipeOpen[1])
-        {
-            close(m_stdOutPipe[1]);
-            m_stdOutPipeOpen[1] = false;
-        }
+        CLOSE_PIPE(Out, 1);
+        CLOSE_PIPE(Err, 1);
+        CLOSE_PIPE(In, 0);
 
         // Parent process
         freeArgvArray(argv);
@@ -240,10 +260,38 @@ namespace cpplib
         m_stdoutBuf = new fd_streambuf(m_stdOutPipe[0], true);
         out.rdbuf(m_stdoutBuf);
 
+        m_stderrBuf = new fd_streambuf(m_stdErrPipe[0], true);
+        err.rdbuf(m_stderrBuf);
+
+        m_stdinBuf = new fd_streambuf(m_stdInPipe[1], false);
+        in.rdbuf(m_stdinBuf);
+
         m_pid = pid;
         m_running = true;
 
         m_monitorThread = std::thread(std::bind(&Process::monitorProcess, this));
+
+        if (m_outputCallback)
+        {
+            std::thread outputThread([this]() {
+                std::string line;
+                while (std::getline(out, line)) {
+                    m_outputCallback(line);
+                }
+            });
+            outputThread.detach();
+        }
+
+        if (m_errorCallback)
+        {
+            std::thread errorThread([this]() {
+                std::string line;
+                while (std::getline(err, line)) {
+                    m_errorCallback(line);
+                }
+            });
+            errorThread.detach();
+        }
 
         return 0;
     }
@@ -267,37 +315,6 @@ namespace cpplib
             // In detached mode, do not wait for the child
             return 0;
         }
-        if (m_outputCallback)
-        {
-            m_stdOutPipeOpen[1] = false;
-            std::array<char, 4096> buffer;
-            ssize_t n;
-            std::string lineBuffer;
-            while ((n = read(m_stdOutPipe[0], buffer.data(), buffer.size() - 1)) > 0)
-            {
-                buffer[n] = '\0';
-                lineBuffer += buffer.data();
-
-                size_t pos = 0;
-                while ((pos = lineBuffer.find('\n')) != std::string::npos)
-                {
-                    std::string line = lineBuffer.substr(0, pos + 1);
-                    if (m_outputCallback)
-                    {
-                        m_outputCallback(line);
-                    }
-                    lineBuffer.erase(0, pos + 1);
-                }
-            }
-
-            if (!lineBuffer.empty())
-            {
-                if (m_outputCallback)
-                {
-                    m_outputCallback(lineBuffer);
-                }
-            }
-        }
 
         waitForExit();
 
@@ -308,7 +325,6 @@ namespace cpplib
     {
         if (m_detached)
         {
-            throw std::runtime_error("Cannot wait for exit of detached process");
             return -1;
         }
         if (m_pid == -1)
@@ -330,16 +346,7 @@ namespace cpplib
             m_stdinBuf->sync();
         }
 
-        if (m_stdOutPipeOpen[0])
-        {
-            close(m_stdOutPipe[0]);
-            m_stdOutPipeOpen[0] = false;
-        }
-        if (m_stdOutPipeOpen[1])
-        {
-            close(m_stdOutPipe[1]);
-            m_stdOutPipeOpen[1] = false;
-        }
+        closePipes();
 
         if (!m_running)
         {
@@ -431,5 +438,42 @@ namespace cpplib
     {
         m_running = false;
         waitForExit();
+    }
+
+    void Process::closePipes()
+    {
+        closePipe(m_stdOutPipe, m_stdOutPipeOpen);
+        closePipe(m_stdErrPipe, m_stdErrPipeOpen);
+        closePipe(m_stdInPipe, m_stdInPipeOpen);
+    }
+
+    void Process::closePipe(int pipeFd[2], bool openFlags[2], int endsToClose)
+    {
+        if (endsToClose == 3)
+        {
+            if (openFlags[0])
+            {
+                close(pipeFd[0]);
+                openFlags[0] = false;
+            }
+            if (openFlags[1])
+            {
+                close(pipeFd[1]);
+                openFlags[1] = false;
+            }
+        }
+        else
+        {
+            if ((endsToClose == 0) && openFlags[0])
+            {
+                close(pipeFd[0]);
+                openFlags[0] = false;
+            }
+            if ((endsToClose == 1) && openFlags[1])
+            {
+                close(pipeFd[1]);
+                openFlags[1] = false;
+            }
+        }
     }
 }; // namespace cpplib
